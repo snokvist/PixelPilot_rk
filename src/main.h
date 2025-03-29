@@ -1,5 +1,16 @@
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern int mavlink_port;
+extern int mavlink_thread_signal;
+
+#ifdef __cplusplus
+}
+#endif
+
 /* --- Console arguments parser --- */
 #define __BeginParseConsoleArguments__(printHelpFunction) \
   if (argc < 1 || (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "/?") \
