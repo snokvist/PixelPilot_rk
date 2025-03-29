@@ -81,8 +81,8 @@ char* insertString(char s1[], const char s2[], size_t pos) {
   return s1;
 }
 
-int mavlink_port = 14550;
-int mavlink_thread_signal = 0;
+extern int mavlink_port;
+extern int mavlink_thread_signal;
 
 void* __MAVLINK_THREAD__(void* arg) {
   pthread_setname_np(pthread_self(), "__MAVLINK");
