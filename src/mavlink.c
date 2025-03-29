@@ -24,6 +24,7 @@
 #include "mavlink/common/mavlink.h"
 #include "mavlink.h"
 #include "osd.h"
+#include "main.h"
 
 // Declare the C-compatible interface to cpp dvr functions
 typedef struct Dvr* Dvr; // Forward declaration
