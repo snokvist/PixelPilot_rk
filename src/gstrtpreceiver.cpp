@@ -119,7 +119,11 @@ namespace {
         double volume = 1.0;
         std::string sink = "autoaudiosink";
         std::string device;
-        bool low_latency = true;
+        int audio_queue_start_buffers = 2;
+        int audio_queue_play_buffers = 2;
+        int audio_queue_sink_buffers = 2;
+        uint64_t audio_sink_buffer_time_us = 20000;
+        uint64_t audio_sink_latency_time_us = 10000;
         bool pt_filter = false;
     };
 
@@ -151,9 +155,9 @@ namespace {
                 spdlog::warn("audio.device ignored for sink '{}'; device is only applied to alsasink", cfg.sink);
             }
         }
-        if (cfg.low_latency && (cfg.sink == "alsasink" || cfg.sink.rfind("alsasink ", 0) == 0)) {
-            // Favor low latency over glitch resistance when using ALSA directly.
-            ss << " buffer-time=20000 latency-time=10000";
+        if (cfg.sink == "alsasink" || cfg.sink.rfind("alsasink ", 0) == 0) {
+            ss << " buffer-time=" << cfg.audio_sink_buffer_time_us
+               << " latency-time=" << cfg.audio_sink_latency_time_us;
         }
         ss << " sync=false async=false";
         return ss.str();
@@ -773,7 +777,6 @@ extern "C" void gst_receiver_configure_audio(bool enabled,
     g_audio_config.volume = volume;
     g_audio_config.sink = (sink && sink[0]) ? sink : "autoaudiosink";
     g_audio_config.device = (device && device[0]) ? device : "";
-    g_audio_config.low_latency = true;
     g_audio_config.pt_filter = pt_filter;
 }
 
@@ -887,10 +890,15 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
 
         if (audio_cfg.enabled) {
             ss << "ptdemux.src_" << audio_cfg.payload_type
-               << " ! queue max-size-time=0 max-size-buffers=2 max-size-bytes=0 leaky=downstream ! ";
+               << " ! queue name=audio_queue_start leaky=2 max-size-time=0 max-size-bytes=0 max-size-buffers="
+               << audio_cfg.audio_queue_start_buffers << " ! ";
             ss << "capsfilter caps=\"" << audio_rtp_caps(audio_cfg) << "\" ! ";
             ss << audio_depay_decode_chain();
+            ss << "queue name=audio_queue_play leaky=2 max-size-time=0 max-size-bytes=0 max-size-buffers="
+               << audio_cfg.audio_queue_play_buffers << " ! ";
             ss << "audioconvert qos=false ! audioresample quality=0 ! ";
+            ss << "queue name=audio_queue_sink leaky=2 max-size-time=0 max-size-bytes=0 max-size-buffers="
+               << audio_cfg.audio_queue_sink_buffers << " ! ";
             ss << "volume volume=" << audio_cfg.volume << " ! ";
             ss << audio_sink_chain(audio_cfg);
         } else {
