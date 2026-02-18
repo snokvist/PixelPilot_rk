@@ -120,7 +120,6 @@ uint32_t osd_plane_id_override = 0;
 
 bool audio_enabled = false;
 int audio_payload_type = 97;
-std::string audio_codec = "opus";
 int audio_latency_ms = 60;
 double audio_volume = 1.0;
 std::string audio_sink = "autoaudiosink";
@@ -735,8 +734,6 @@ void printHelp() {
     "\n"
     "    --audio                - Enable live audio decode/output from RTP payload stream\n"
     "\n"
-    "    --audio-codec <codec>  - RTP audio codec: opus|pcmu|pcma|aac (Default: opus)\n"
-    "\n"
     "    --audio-payload <pt>   - RTP payload type for audio stream (Default: 97)\n"
     "\n"
     "    --audio-latency <ms>   - Audio jitterbuffer latency in ms (Default: 60)\n"
@@ -932,10 +929,6 @@ int main(int argc, char **argv)
 		continue;
 	}
 
-	__OnArgument("--audio-codec") {
-		audio_codec = __ArgValue;
-		continue;
-	}
 
 	__OnArgument("--audio-payload") {
 		audio_payload_type = atoi(__ArgValue);
@@ -1086,9 +1079,6 @@ int main(int argc, char **argv)
 			if (audio_cfg["enabled"]) {
 				audio_enabled = audio_cfg["enabled"].as<bool>();
 			}
-			if (audio_cfg["codec"]) {
-				audio_codec = audio_cfg["codec"].as<std::string>();
-			}
 			if (audio_cfg["payload"]) {
 				audio_payload_type = audio_cfg["payload"].as<int>();
 			}
@@ -1169,15 +1159,13 @@ int main(int argc, char **argv)
 
 	gst_receiver_configure_audio(audio_enabled,
 	                            audio_payload_type,
-	                            audio_codec.c_str(),
 	                            audio_latency_ms,
 	                            audio_volume,
 	                            audio_sink.c_str(),
 	                            audio_device.c_str(),
 	                            pt_filter);
-	spdlog::info("Audio: enabled={} codec={} payload={} latency_ms={} volume={} sink={} device={} pt_filter={}",
+	spdlog::info("Audio: enabled={} payload={} latency_ms={} volume={} sink={} device={} pt_filter={}",
 	             audio_enabled,
-	             audio_codec,
 	             audio_payload_type,
 	             audio_latency_ms,
 	             audio_volume,

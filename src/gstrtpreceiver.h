@@ -99,7 +99,6 @@ void idr_request_decoder_issue(const char* reason);
 void idr_notify_decoded_frame();
 void gst_receiver_configure_audio(bool enabled,
                                   int payload_type,
-                                  const char* codec,
                                   int latency_ms,
                                   double volume,
                                   const char* sink,

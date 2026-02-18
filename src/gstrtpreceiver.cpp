@@ -115,7 +115,6 @@ namespace {
     struct AudioConfig {
         bool enabled = false;
         int payload_type = 97;
-        std::string codec = "opus";
         int latency_ms = 60;
         double volume = 1.0;
         std::string sink = "autoaudiosink";
@@ -130,46 +129,17 @@ namespace {
         std::lock_guard<std::mutex> lock(g_audio_config_mutex);
         return g_audio_config;
     }
-
-    static std::string to_upper_ascii(std::string v) {
-        for (char& c : v) {
-            c = static_cast<char>(::toupper(static_cast<unsigned char>(c)));
-        }
-        return v;
-    }
-
     static std::string audio_rtp_caps(const AudioConfig& cfg) {
-        const std::string codec_upper = to_upper_ascii(cfg.codec);
         std::stringstream ss;
-        ss << "application/x-rtp,media=(string)audio,encoding-name=(string)" << codec_upper
-           << ",payload=(int)" << cfg.payload_type;
-        if (codec_upper == "OPUS") {
-            ss << ",clock-rate=(int)48000";
-        } else if (codec_upper == "PCMU" || codec_upper == "PCMA") {
-            ss << ",clock-rate=(int)8000";
-        } else if (codec_upper == "MPEG4-GENERIC") {
-            ss << ",clock-rate=(int)48000";
-        }
+        ss << "application/x-rtp,media=(string)audio,encoding-name=(string)OPUS"
+           << ",payload=(int)" << cfg.payload_type
+           << ",clock-rate=(int)48000";
         return ss.str();
     }
 
-    static std::string audio_depay_decode_chain(const AudioConfig& cfg) {
-        const std::string codec_upper = to_upper_ascii(cfg.codec);
-        if (codec_upper == "OPUS") {
-            return "rtpopusdepay ! opusdec ! ";
-        }
-        if (codec_upper == "PCMU") {
-            return "rtppcmudepay ! mulawdec ! ";
-        }
-        if (codec_upper == "PCMA") {
-            return "rtppcmadepay ! alawdec ! ";
-        }
-        if (codec_upper == "MPEG4-GENERIC" || codec_upper == "AAC") {
-            return "rtpmp4gdepay ! aacparse ! avdec_aac ! ";
-        }
+    static std::string audio_depay_decode_chain() {
         return "rtpopusdepay ! opusdec ! ";
     }
-
     static std::string audio_sink_chain(const AudioConfig& cfg) {
         std::stringstream ss;
         ss << cfg.sink;
@@ -786,7 +756,6 @@ static void initGstreamerOrThrow() {
 
 extern "C" void gst_receiver_configure_audio(bool enabled,
                                               int payload_type,
-                                              const char* codec,
                                               int latency_ms,
                                               double volume,
                                               const char* sink,
@@ -795,10 +764,6 @@ extern "C" void gst_receiver_configure_audio(bool enabled,
     std::lock_guard<std::mutex> lock(g_audio_config_mutex);
     g_audio_config.enabled = enabled;
     g_audio_config.payload_type = payload_type > 0 ? payload_type : 97;
-    g_audio_config.codec = (codec && codec[0]) ? codec : "opus";
-    if (g_audio_config.codec == "aac" || g_audio_config.codec == "AAC") {
-        g_audio_config.codec = "mpeg4-generic";
-    }
     g_audio_config.latency_ms = latency_ms > 0 ? latency_ms : 60;
     g_audio_config.volume = volume;
     g_audio_config.sink = (sink && sink[0]) ? sink : "autoaudiosink";
@@ -916,7 +881,7 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
         if (audio_cfg.enabled) {
             ss << "ptdemux.src_" << audio_cfg.payload_type << " ! queue ! ";
             ss << "capsfilter caps=\"" << audio_rtp_caps(audio_cfg) << "\" ! ";
-            ss << audio_depay_decode_chain(audio_cfg);
+            ss << audio_depay_decode_chain();
             ss << "audioconvert ! audioresample ! ";
             ss << "volume volume=" << audio_cfg.volume << " ! ";
             ss << audio_sink_chain(audio_cfg);

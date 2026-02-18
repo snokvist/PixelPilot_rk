@@ -63,7 +63,6 @@ os_sensors:
 # Optional RTP audio decode/output pipeline
 # audio:
 #   enabled: true
-#   codec: opus          # opus|pcmu|pcma|aac
 #   payload: 97
 #   latency-ms: 60
 #   volume: 1.0
