@@ -118,6 +118,14 @@ size_t gsactions_count;
 uint32_t video_plane_id_override = 0;
 uint32_t osd_plane_id_override = 0;
 
+bool audio_enabled = false;
+int audio_payload_type = 97;
+int audio_latency_ms = 60;
+double audio_volume = 1.0;
+std::string audio_sink = "autoaudiosink";
+std::string audio_device;
+bool pt_filter = false;
+
 WiFiRSSIMonitor wifi_monitor;
 extern enum RXMode RXMODE;
 
@@ -724,6 +732,20 @@ void printHelp() {
     "\n"
     "    --disable-gregidr      - Disable last-hop probing and IDR requests\n"
     "\n"
+    "    --audio                - Enable live audio decode/output from RTP payload stream\n"
+    "\n"
+    "    --audio-payload <pt>   - RTP payload type for audio stream (Default: 97)\n"
+    "\n"
+    "    --audio-latency <ms>   - Audio jitterbuffer latency in ms (Default: 60)\n"
+    "\n"
+    "    --audio-volume <gain>  - Audio output volume scalar (Default: 1.0)\n"
+    "\n"
+    "    --audio-sink <sink>    - GStreamer audio sink element (Default: autoaudiosink)\n"
+    "\n"
+    "    --audio-device <dev>   - ALSA device for alsasink (e.g. hw:0,0 or plughw:CARD=Audio,DEV=0)\n"
+    "\n"
+    "    --pt-filter          - Sort mixed RTP by PT without audio decode (drops non-video PT; disable for pure video)\n"
+    "\n"
     "    --screen-mode-list     - Print the list of supported screen modes and exit.\n"
     "\n"
     "    --wfb-api-port         - Port of wfb-server for cli statistics. (Default: 8003)\n"
@@ -902,6 +924,43 @@ int main(int argc, char **argv)
 		continue;
 	}
 
+	__OnArgument("--audio") {
+		audio_enabled = true;
+		continue;
+	}
+
+
+	__OnArgument("--audio-payload") {
+		audio_payload_type = atoi(__ArgValue);
+		continue;
+	}
+
+	__OnArgument("--audio-latency") {
+		audio_latency_ms = atoi(__ArgValue);
+		continue;
+	}
+
+	__OnArgument("--audio-volume") {
+		audio_volume = atof(__ArgValue);
+		continue;
+	}
+
+	__OnArgument("--audio-sink") {
+		audio_sink = __ArgValue;
+		continue;
+	}
+
+	__OnArgument("--audio-device") {
+		audio_device = __ArgValue;
+		continue;
+	}
+
+	__OnArgument("--pt-filter") {
+		pt_filter = true;
+		continue;
+	}
+
+
 	__OnArgument("--screen-mode-list") {
 		print_modelist = 1;
 		continue;
@@ -1014,6 +1073,35 @@ int main(int argc, char **argv)
 		}
 		}
 
+
+		if (config["audio"] && config["audio"].IsMap()) {
+			auto audio_cfg = config["audio"];
+			if (audio_cfg["enabled"]) {
+				audio_enabled = audio_cfg["enabled"].as<bool>();
+			}
+			if (audio_cfg["payload"]) {
+				audio_payload_type = audio_cfg["payload"].as<int>();
+			}
+			if (audio_cfg["latency-ms"]) {
+				audio_latency_ms = audio_cfg["latency-ms"].as<int>();
+			}
+			if (audio_cfg["volume"]) {
+				audio_volume = audio_cfg["volume"].as<double>();
+			}
+			if (audio_cfg["sink"]) {
+				audio_sink = audio_cfg["sink"].as<std::string>();
+			}
+			if (audio_cfg["device"]) {
+				audio_device = audio_cfg["device"].as<std::string>();
+			}
+			if (audio_cfg["pt-filter"]) {
+				pt_filter = audio_cfg["pt-filter"].as<bool>();
+			}
+		}
+		if (config["pt-filter"]) {
+			pt_filter = config["pt-filter"].as<bool>();
+		}
+
 		if (config["os_sensors"] && config["os_sensors"].IsMap()) {
 			if (config["os_sensors"]["cpu"]) {
 				auto cpu = config["os_sensors"]["cpu"];
@@ -1059,6 +1147,31 @@ int main(int argc, char **argv)
 	}
 
 	spdlog::info("disable_vsync: {}", disable_vsync);
+
+	if (audio_payload_type < 0 || audio_payload_type > 127) {
+		fprintf(stderr, "Invalid audio payload type %d (expected 0-127)\n", audio_payload_type);
+		return -1;
+	}
+	if (audio_latency_ms <= 0) {
+		fprintf(stderr, "Invalid audio latency %d (must be > 0)\n", audio_latency_ms);
+		return -1;
+	}
+
+	gst_receiver_configure_audio(audio_enabled,
+	                            audio_payload_type,
+	                            audio_latency_ms,
+	                            audio_volume,
+	                            audio_sink.c_str(),
+	                            audio_device.c_str(),
+	                            pt_filter);
+	spdlog::info("Audio: enabled={} payload={} latency_ms={} volume={} sink={} device={} pt_filter={}",
+	             audio_enabled,
+	             audio_payload_type,
+	             audio_latency_ms,
+	             audio_volume,
+	             audio_sink,
+	             audio_device,
+	             pt_filter);
 
 	if (enable_osd == 0 ) {
 		video_zpos = 4;

@@ -97,6 +97,13 @@ bool idr_get_enabled();
 void idr_request_record_start();
 void idr_request_decoder_issue(const char* reason);
 void idr_notify_decoded_frame();
+void gst_receiver_configure_audio(bool enabled,
+                                  int payload_type,
+                                  int latency_ms,
+                                  double volume,
+                                  const char* sink,
+                                  const char* device,
+                                  bool pt_filter);
 #ifdef __cplusplus
 }
 #endif

@@ -24,6 +24,7 @@
 #include <thread>
 #include <random>
 #include <chrono>
+#include <cctype>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -36,16 +37,47 @@
 #include <sys/random.h>
 #endif
 
+namespace {
+    static int video_payload_for_codec(const VideoCodec& videoCodec) {
+        if (videoCodec == VideoCodec::H265) {
+            return 96;
+        }
+        if (videoCodec == VideoCodec::H264) {
+            return 97;
+        }
+        return 96;
+    }
+
+    static int non_video_payload_for_codec(const VideoCodec& videoCodec) {
+        if (videoCodec == VideoCodec::H265) {
+            return 97;
+        }
+        if (videoCodec == VideoCodec::H264) {
+            return 96;
+        }
+        return 97;
+    }
+}
+
 namespace pipeline {
-    static std::string gst_create_rtp_caps(const VideoCodec& videoCodec){
+    static std::string gst_create_rtp_caps(const VideoCodec& videoCodec, int forced_video_payload){
         std::stringstream ss;
         if(videoCodec==VideoCodec::H264){
-            ss<<"caps=\"application/x-rtp, media=(string)video, encoding-name=(string)H264, payload=(int)96\"";
+            ss<<"caps=\"application/x-rtp, media=(string)video, encoding-name=(string)H264";
+            if (forced_video_payload >= 0) {
+                ss<<", payload=(int)"<<forced_video_payload;
+            }
+            ss<<"\"";
         }else if(videoCodec==VideoCodec::H265){
-            ss<<"caps=\"application/x-rtp, media=(string)video, encoding-name=(string)H265, clock-rate=(int)90000\"";
+            ss<<"caps=\"application/x-rtp, media=(string)video, encoding-name=(string)H265, clock-rate=(int)90000";
+            if (forced_video_payload >= 0) {
+                ss<<", payload=(int)"<<forced_video_payload;
+            }
+            ss<<"\"";
         }
         return ss.str();
     }
+
     static std::string create_rtp_depacketize_for_codec(const VideoCodec& codec){
         if(codec==VideoCodec::H264)return "rtph264depay ! ";
         if(codec==VideoCodec::H265)return "rtph265depay ! ";
@@ -76,6 +108,59 @@ namespace pipeline {
             return ss.str();
         }
         assert(false);
+    }
+}
+
+namespace {
+    struct AudioConfig {
+        bool enabled = false;
+        int payload_type = 97;
+        int latency_ms = 60;
+        double volume = 1.0;
+        std::string sink = "autoaudiosink";
+        std::string device;
+        int audio_queue_start_buffers = 2;
+        int audio_queue_play_buffers = 2;
+        int audio_queue_sink_buffers = 2;
+        uint64_t audio_sink_buffer_time_us = 20000;
+        uint64_t audio_sink_latency_time_us = 10000;
+        bool pt_filter = false;
+    };
+
+    std::mutex g_audio_config_mutex;
+    AudioConfig g_audio_config;
+
+    static AudioConfig get_audio_config_copy() {
+        std::lock_guard<std::mutex> lock(g_audio_config_mutex);
+        return g_audio_config;
+    }
+    static std::string audio_rtp_caps(const AudioConfig& cfg) {
+        std::stringstream ss;
+        ss << "application/x-rtp,media=(string)audio,encoding-name=(string)OPUS"
+           << ",payload=(int)" << cfg.payload_type
+           << ",clock-rate=(int)48000";
+        return ss.str();
+    }
+
+    static std::string audio_depay_decode_chain() {
+        return "rtpopusdepay ! opusdec ! ";
+    }
+    static std::string audio_sink_chain(const AudioConfig& cfg) {
+        std::stringstream ss;
+        ss << cfg.sink;
+        if (!cfg.device.empty()) {
+            if (cfg.sink == "alsasink" || cfg.sink.rfind("alsasink ", 0) == 0) {
+                ss << " device=\"" << cfg.device << "\"";
+            } else {
+                spdlog::warn("audio.device ignored for sink '{}'; device is only applied to alsasink", cfg.sink);
+            }
+        }
+        if (cfg.sink == "alsasink" || cfg.sink.rfind("alsasink ", 0) == 0) {
+            ss << " buffer-time=" << cfg.audio_sink_buffer_time_us
+               << " latency-time=" << cfg.audio_sink_latency_time_us;
+        }
+        ss << " sync=false async=false";
+        return ss.str();
     }
 }
 
@@ -677,6 +762,24 @@ static void initGstreamerOrThrow() {
     }
 }
 
+
+extern "C" void gst_receiver_configure_audio(bool enabled,
+                                              int payload_type,
+                                              int latency_ms,
+                                              double volume,
+                                              const char* sink,
+                                              const char* device,
+                                              bool pt_filter) {
+    std::lock_guard<std::mutex> lock(g_audio_config_mutex);
+    g_audio_config.enabled = enabled;
+    g_audio_config.payload_type = payload_type > 0 ? payload_type : 97;
+    g_audio_config.latency_ms = latency_ms > 0 ? latency_ms : 60;
+    g_audio_config.volume = volume;
+    g_audio_config.sink = (sink && sink[0]) ? sink : "autoaudiosink";
+    g_audio_config.device = (device && device[0]) ? device : "";
+    g_audio_config.pt_filter = pt_filter;
+}
+
 GstRtpReceiver::GstRtpReceiver(int udp_port, const VideoCodec& codec)
 {
     m_port=udp_port;
@@ -761,14 +864,61 @@ static void loop_pull_appsink_samples(bool& keep_looping,GstElement *app_sink_el
 std::string GstRtpReceiver::construct_gstreamer_pipeline()
 {
     std::stringstream ss;
-    if (! unix_socket)
-        ss<<"udpsrc port="<<m_port<<" "<<pipeline::gst_create_rtp_caps(m_video_codec)<<" ! ";
-    else
-        ss<<"appsrc name=appsrc "<<pipeline::gst_create_rtp_caps(m_video_codec)<<" ! ";
-    ss<<pipeline::create_rtp_depacketize_for_codec(m_video_codec);
-    ss<<pipeline::create_parse_for_codec(m_video_codec);
-    ss<<pipeline::create_out_caps(m_video_codec);
-    ss<<" appsink drop=true name=out_appsink";
+    const auto audio_cfg = get_audio_config_copy();
+    const int video_pt = video_payload_for_codec(m_video_codec);
+    const bool needs_pt_sorting = audio_cfg.enabled || audio_cfg.pt_filter;
+
+    if (needs_pt_sorting) {
+        if (!unix_socket) {
+            ss << "udpsrc port=" << m_port << " caps=\"application/x-rtp\" ! ";
+        } else {
+            ss << "appsrc name=appsrc caps=\"application/x-rtp\" ! ";
+        }
+
+        if (audio_cfg.enabled) {
+            ss << "rtpjitterbuffer latency=" << audio_cfg.latency_ms << " drop-on-latency=true do-lost=true ! ";
+        }
+
+        ss << "rtpptdemux name=ptdemux ";
+
+        ss << "ptdemux.src_" << video_pt
+           << " ! queue max-size-time=0 max-size-buffers=2 max-size-bytes=0 leaky=downstream ! ";
+        ss << pipeline::create_rtp_depacketize_for_codec(m_video_codec);
+        ss << pipeline::create_parse_for_codec(m_video_codec);
+        ss << pipeline::create_out_caps(m_video_codec);
+        ss << "appsink drop=true max-buffers=1 name=out_appsink sync=false ";
+
+        if (audio_cfg.enabled) {
+            ss << "ptdemux.src_" << audio_cfg.payload_type
+               << " ! queue name=audio_queue_start leaky=2 max-size-time=0 max-size-bytes=0 max-size-buffers="
+               << audio_cfg.audio_queue_start_buffers << " ! ";
+            ss << "capsfilter caps=\"" << audio_rtp_caps(audio_cfg) << "\" ! ";
+            ss << audio_depay_decode_chain();
+            ss << "queue name=audio_queue_play leaky=2 max-size-time=0 max-size-bytes=0 max-size-buffers="
+               << audio_cfg.audio_queue_play_buffers << " ! ";
+            ss << "audioconvert qos=false ! audioresample quality=0 ! ";
+            ss << "queue name=audio_queue_sink leaky=2 max-size-time=0 max-size-bytes=0 max-size-buffers="
+               << audio_cfg.audio_queue_sink_buffers << " ! ";
+            ss << "volume volume=" << audio_cfg.volume << " ! ";
+            ss << audio_sink_chain(audio_cfg);
+        } else {
+            ss << "ptdemux.src_" << non_video_payload_for_codec(m_video_codec)
+               << " ! queue ! fakesink sync=false async=false";
+        }
+        return ss.str();
+    }
+
+    if (!unix_socket) {
+        ss << "udpsrc port=" << m_port << " "
+           << pipeline::gst_create_rtp_caps(m_video_codec, -1) << " ! ";
+    } else {
+        ss << "appsrc name=appsrc "
+           << pipeline::gst_create_rtp_caps(m_video_codec, -1) << " ! ";
+    }
+    ss << pipeline::create_rtp_depacketize_for_codec(m_video_codec);
+    ss << pipeline::create_parse_for_codec(m_video_codec);
+    ss << pipeline::create_out_caps(m_video_codec);
+    ss << " appsink drop=true name=out_appsink";
     return ss.str();
 }
 
@@ -862,6 +1012,41 @@ static void loop_read_socket(bool& keep_looping, int sock_fd, GstAppSrc* appsrc)
     }
 }
 
+
+static void request_pipeline_eos(GstElement* pipeline) {
+    if (!pipeline) {
+        return;
+    }
+
+    const bool sent = gst_element_send_event(pipeline, gst_event_new_eos());
+    if (!sent) {
+        spdlog::warn("Failed to send EOS event to gstreamer pipeline");
+    }
+
+    GstBus* bus = gst_element_get_bus(pipeline);
+    if (!bus) {
+        return;
+    }
+
+    GstMessage* msg = gst_bus_timed_pop_filtered(
+        bus,
+        300 * GST_MSECOND,
+        static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+
+    if (msg) {
+        if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
+            GError* err = nullptr;
+            gchar* dbg = nullptr;
+            gst_message_parse_error(msg, &err, &dbg);
+            spdlog::warn("Pipeline reported error while waiting for EOS: {}", err ? err->message : "unknown");
+            if (err) g_error_free(err);
+            if (dbg) g_free(dbg);
+        }
+        gst_message_unref(msg);
+    }
+    gst_object_unref(bus);
+}
+
 void GstRtpReceiver::start_receiving(NEW_FRAME_CALLBACK cb) {
     spdlog::info("GstRtpReceiver::start_receiving begin");
     assert(m_gst_pipeline == nullptr);
@@ -876,6 +1061,17 @@ void GstRtpReceiver::stop_receiving() {
      spdlog::info("GstRtpReceiver::stop_receiving start");
     m_pull_samples_run = false;
     m_read_socket_run = false;
+
+    if (m_gst_pipeline != nullptr && unix_socket) {
+        GstElement* appsrc = gst_bin_get_by_name(GST_BIN(m_gst_pipeline), "appsrc");
+        if (appsrc) {
+            const GstFlowReturn eos_ret = gst_app_src_end_of_stream(GST_APP_SRC(appsrc));
+            if (eos_ret != GST_FLOW_OK) {
+                spdlog::warn("Appsrc EOS returned {}", gst_flow_get_name(eos_ret));
+            }
+            gst_object_unref(appsrc);
+        }
+    }
     
     if (m_pull_samples_thread) {
         m_pull_samples_thread->join();
@@ -888,7 +1084,7 @@ void GstRtpReceiver::stop_receiving() {
     }
     
     if (m_gst_pipeline != nullptr) {
-        gst_element_send_event((GstElement*)m_gst_pipeline, gst_event_new_eos());
+        request_pipeline_eos((GstElement*)m_gst_pipeline);
         gst_element_set_state(m_gst_pipeline, GST_STATE_PAUSED);
         gst_element_set_state(m_gst_pipeline, GST_STATE_NULL);
         gst_object_unref(m_gst_pipeline);
@@ -939,7 +1135,7 @@ void GstRtpReceiver::switch_to_file_playback(const char * file_path) {
 
 void GstRtpReceiver::switch_to_stream() {
     stop_receiving();
-    
+
     const auto pipeline = construct_gstreamer_pipeline();
     GError* error = nullptr;
     m_gst_pipeline = gst_parse_launch(pipeline.c_str(), &error);
@@ -983,11 +1179,7 @@ void GstRtpReceiver::switch_to_stream() {
         pool = gst_buffer_pool_new();
         config = gst_buffer_pool_get_config(pool);
         
-        GstCaps* caps = gst_caps_new_simple("application/x-rtp",
-            "media", G_TYPE_STRING, "video",
-            "encoding-name", G_TYPE_STRING, 
-                (m_video_codec == VideoCodec::H264) ? "H264" : "H265",
-            NULL);
+        GstCaps* caps = gst_caps_new_simple("application/x-rtp", NULL);
         
         gst_buffer_pool_config_set_params(config, caps, MAX_PACKET_SIZE, 10, 20);
         gst_buffer_pool_set_config(pool, config);

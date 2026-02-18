@@ -59,3 +59,13 @@ os_sensors:
 #   cpu: auto
 #   power: auto
 #   temperature: auto
+
+# Optional RTP audio decode/output pipeline
+# audio:
+#   enabled: true
+#   payload: 97
+#   latency-ms: 60
+#   volume: 1.0
+#   sink: alsasink
+#   device: hw:0,0      # ALSA output (examples: hw:0,0 / plughw:CARD=rockchiphdmi0,DEV=0 / plughw:CARD=Audio,DEV=0)
+#   pt-filter: true    # mixed RTP without audio decode: route non-video PT away; set false for pure video streams
