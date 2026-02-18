@@ -119,6 +119,7 @@ namespace {
         double volume = 1.0;
         std::string sink = "autoaudiosink";
         std::string device;
+        bool low_latency = true;
         bool pt_filter = false;
     };
 
@@ -149,6 +150,10 @@ namespace {
             } else {
                 spdlog::warn("audio.device ignored for sink '{}'; device is only applied to alsasink", cfg.sink);
             }
+        }
+        if (cfg.low_latency && (cfg.sink == "alsasink" || cfg.sink.rfind("alsasink ", 0) == 0)) {
+            // Favor low latency over glitch resistance when using ALSA directly.
+            ss << " buffer-time=20000 latency-time=10000";
         }
         ss << " sync=false async=false";
         return ss.str();
@@ -768,6 +773,7 @@ extern "C" void gst_receiver_configure_audio(bool enabled,
     g_audio_config.volume = volume;
     g_audio_config.sink = (sink && sink[0]) ? sink : "autoaudiosink";
     g_audio_config.device = (device && device[0]) ? device : "";
+    g_audio_config.low_latency = true;
     g_audio_config.pt_filter = pt_filter;
 }
 
@@ -867,22 +873,24 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
         }
 
         if (audio_cfg.enabled) {
-            ss << "rtpjitterbuffer latency=" << audio_cfg.latency_ms << " drop-on-latency=true ! ";
+            ss << "rtpjitterbuffer latency=" << audio_cfg.latency_ms << " drop-on-latency=true do-lost=true ! ";
         }
 
         ss << "rtpptdemux name=ptdemux ";
 
-        ss << "ptdemux.src_" << video_pt << " ! queue ! ";
+        ss << "ptdemux.src_" << video_pt
+           << " ! queue max-size-time=0 max-size-buffers=2 max-size-bytes=0 leaky=downstream ! ";
         ss << pipeline::create_rtp_depacketize_for_codec(m_video_codec);
         ss << pipeline::create_parse_for_codec(m_video_codec);
         ss << pipeline::create_out_caps(m_video_codec);
-        ss << "appsink drop=true name=out_appsink sync=false ";
+        ss << "appsink drop=true max-buffers=1 name=out_appsink sync=false ";
 
         if (audio_cfg.enabled) {
-            ss << "ptdemux.src_" << audio_cfg.payload_type << " ! queue ! ";
+            ss << "ptdemux.src_" << audio_cfg.payload_type
+               << " ! queue max-size-time=0 max-size-buffers=2 max-size-bytes=0 leaky=downstream ! ";
             ss << "capsfilter caps=\"" << audio_rtp_caps(audio_cfg) << "\" ! ";
             ss << audio_depay_decode_chain();
-            ss << "audioconvert ! audioresample ! ";
+            ss << "audioconvert qos=false ! audioresample quality=0 ! ";
             ss << "volume volume=" << audio_cfg.volume << " ! ";
             ss << audio_sink_chain(audio_cfg);
         } else {
